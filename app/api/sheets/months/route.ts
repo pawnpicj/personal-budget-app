@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextResponse } from "next/server";
 import { getAccessTokenOrThrow, handleApiError } from "@/lib/server-auth";
 import { listMonths } from "@/lib/sheets";

@@ -1,3 +1,4 @@
+export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from "next/server";
 import { getAccessTokenOrThrow, handleApiError } from "@/lib/server-auth";
 import { addItem, updateItem, deleteItem } from "@/lib/sheets";
