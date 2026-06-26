@@ -5,6 +5,9 @@ import Providers from "@/components/Providers";
 export const metadata: Metadata = {
   title: "Personal Monthly Budget",
   description: "งบประมาณรายเดือนส่วนตัว เชื่อมต่อ Google Sheets",
+  verification: {
+    google: "E9CRxkK4VQKnv3rvHKF_ynrSuRh32OvUGkOGqP0Mpwg",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
