@@ -41,16 +41,41 @@ export default function OverviewClient() {
   const [data, setData] = useState<MonthSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // salary history: year → month(1-12) → salary value
+  const [salaryHistory, setSalaryHistory] = useState<Map<string, Map<number, number>>>(new Map());
+  const [salaryYears, setSalaryYears] = useState<string[]>([]);
 
   useEffect(() => {
     fetch("/api/sheets/months")
       .then((r) => r.json())
-      .then((res) => {
-        const years = [...new Set<string>((res.months as string[]).map((m) => m.split("-")[1]))]
+      .then(async (res) => {
+        const months: string[] = res.months ?? [];
+        const years = [...new Set<string>(months.map((m) => m.split("-")[1]))]
           .sort()
           .reverse();
         setAvailableYears(years.length > 0 ? years : [currentYear]);
         if (years.length > 0 && !years.includes(year)) setYear(years[0]);
+
+        // Fetch salary history for all years in parallel
+        const results = await Promise.all(
+          years.map((y) =>
+            fetch(`/api/sheets/overview?year=${y}`)
+              .then((r) => r.json())
+              .then((d) => ({ year: y, summary: (d.summary ?? []) as MonthSummary[] }))
+              .catch(() => ({ year: y, summary: [] }))
+          )
+        );
+        const histMap = new Map<string, Map<number, number>>();
+        for (const { year: y, summary } of results) {
+          const monthMap = new Map<number, number>();
+          for (const s of summary) {
+            const mm = parseInt(s.month.split("-")[0]);
+            monthMap.set(mm, s.salary);
+          }
+          histMap.set(y, monthMap);
+        }
+        setSalaryHistory(histMap);
+        setSalaryYears([...years].sort()); // ascending for table
       })
       .catch(() => setAvailableYears([currentYear]));
   }, []);
@@ -199,6 +224,48 @@ export default function OverviewClient() {
               </BarChart>
             </ResponsiveContainer>
           </div>
+
+          {/* Salary history table — all years */}
+          {salaryYears.length > 0 && (
+            <div className="bg-white rounded-2xl border border-gray-200 p-5">
+              <h2 className="text-sm font-medium text-gray-700 mb-3">Salary</h2>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs border-collapse">
+                  <thead>
+                    <tr className="border-b border-gray-200">
+                      <th className="text-left py-2 pr-3 text-gray-500 font-medium w-16">Year</th>
+                      {[1,2,3,4,5,6,7,8,9,10,11,12].map((m) => (
+                        <th key={m} className="text-right py-2 px-1.5 text-gray-500 font-medium min-w-[64px]">{m}</th>
+                      ))}
+                      <th className="text-right py-2 pl-3 text-gray-500 font-medium min-w-[72px]">total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...salaryYears].reverse().map((y) => {
+                      const monthMap = salaryHistory.get(y) ?? new Map();
+                      const total = [...monthMap.values()].reduce((s, v) => s + v, 0);
+                      return (
+                        <tr key={y} className="border-b border-gray-50 hover:bg-gray-50">
+                          <td className="py-2 pr-3 font-semibold text-gray-700">{y}</td>
+                          {[1,2,3,4,5,6,7,8,9,10,11,12].map((m) => {
+                            const val = monthMap.get(m);
+                            return (
+                              <td key={m} className="py-2 px-1.5 text-right text-gray-600">
+                                {val != null && val > 0 ? val.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ""}
+                              </td>
+                            );
+                          })}
+                          <td className="py-2 pl-3 text-right font-semibold text-[#1D9E75]">
+                            {total > 0 ? total.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : ""}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
 
           {/* Monthly table + category pie */}
           <div className="grid sm:grid-cols-3 gap-5">

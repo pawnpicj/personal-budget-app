@@ -34,6 +34,21 @@ export interface CategoryYearlySummary {
   actualTotal: number;
 }
 
+export interface InstallmentRow {
+  rowIndex: number;
+  no: number;
+  plannedAmount: number;
+  dueDate: string;
+  paid: boolean;
+  actualAmount: number;
+  paidDate: string;
+}
+
+export interface InstallmentPlan {
+  name: string;
+  rows: InstallmentRow[];
+}
+
 export interface MonthSummary {
   month: string;
   salary: number;

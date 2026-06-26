@@ -10,6 +10,7 @@ import CategoryCard from "@/components/CategoryCard";
 import AddCategoryCard from "@/components/AddCategoryCard";
 import BudgetVsActualChart from "@/components/BudgetVsActualChart";
 import SummaryChart from "@/components/SummaryChart";
+import OCRUpload from "@/components/OCRUpload";
 import LoadingOverlay from "@/components/LoadingOverlay";
 import Toast from "@/components/Toast";
 
@@ -132,6 +133,19 @@ export default function DashboardClient() {
     setMonth(newMonth);
   }
 
+  async function handleCopyMonth(fromMonth: string, toMonth: string) {
+    if (!/^\d{2}-\d{4}$/.test(toMonth)) {
+      showToast("รูปแบบเดือนต้องเป็น MM-YYYY เช่น 07-2026", "error");
+      return;
+    }
+    await withBusy(
+      () => api("/api/sheets/copy", { method: "POST", body: JSON.stringify({ fromMonth, toMonth }) }),
+      `คัดลอก ${fromMonth} → ${toMonth} แล้ว`
+    );
+    setMonths((prev) => prev.includes(toMonth) ? prev : [toMonth, ...prev].sort().reverse());
+    setMonth(toMonth);
+  }
+
   async function handleHideMonth(monthToHide: string) {
     await withBusy(
       () => api("/api/sheets/month", { method: "PATCH", body: JSON.stringify({ month: monthToHide }) }),
@@ -205,6 +219,29 @@ export default function DashboardClient() {
     loadMonthData(month);
   }
 
+  async function handleAddItems(category: string, items: { item: string; plan: number; actual: number }[]) {
+    const catData = categories.find((c) => c.category === category);
+    let added = 0, updated = 0;
+    await withBusy(async () => {
+      for (const item of items) {
+        const existing = catData?.items.find(
+          (e) => e.item.trim().toLowerCase() === item.item.trim().toLowerCase()
+        );
+        if (existing) {
+          await api("/api/sheets/item", {
+            method: "PUT",
+            body: JSON.stringify({ month, rowIndex: existing.rowIndex, item: item.item, plan: item.plan, actual: item.actual, category }),
+          });
+          updated++;
+        } else {
+          await api("/api/sheets/item", { method: "POST", body: JSON.stringify({ month, category, ...item }) });
+          added++;
+        }
+      }
+    }, `${updated > 0 ? `อัปเดต ${updated}` : ""}${updated > 0 && added > 0 ? ", " : ""}${added > 0 ? `เพิ่ม ${added}` : ""} รายการแล้ว`);
+    loadMonthData(month);
+  }
+
   async function handleCreateCategory(
     category: string,
     firstItem: { item: string; plan: number; actual: number }
@@ -234,6 +271,7 @@ export default function DashboardClient() {
             current={month}
             onChange={setMonth}
             onCreateMonth={handleCreateMonth}
+            onCopyMonth={handleCopyMonth}
             onHideMonth={handleHideMonth}
             onDeleteMonth={handleDeleteMonth}
           />
@@ -241,23 +279,30 @@ export default function DashboardClient() {
             <Link
               href="/overview"
               title="Overview"
-              className="flex items-center px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
+              className="flex items-center px-3 py-2 bg-blue-500 hover:bg-blue-600 text-white transition-colors"
             >
               <i className="ti ti-chart-bar" aria-hidden="true" />
+            </Link>
+            <Link
+              href="/installments"
+              title="ผ่อนชำระ"
+              className="flex items-center px-3 py-2 bg-amber-400 hover:bg-amber-500 text-white transition-colors"
+            >
+              <i className="ti ti-credit-card" aria-hidden="true" />
             </Link>
             <a
               href={`https://docs.google.com/spreadsheets/d/${process.env.NEXT_PUBLIC_SHEET_ID}/edit`}
               target="_blank"
               rel="noopener noreferrer"
               title="เปิด Google Sheet"
-              className="flex items-center px-3 py-1.5 bg-[#1D9E75] hover:bg-[#0F6E56] text-white transition-colors"
+              className="flex items-center px-3 py-2 bg-[#1D9E75] hover:bg-[#0F6E56] text-white transition-colors"
             >
               <i className="ti ti-table-filled" aria-hidden="true" />
             </a>
             <button
               onClick={() => signOut({ callbackUrl: "/login" })}
               title="Logout"
-              className="flex items-center px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white transition-colors"
+              className="flex items-center px-3 py-2 bg-red-500 hover:bg-red-600 text-white transition-colors"
             >
               <i className="ti ti-logout" aria-hidden="true" />
             </button>
@@ -276,6 +321,11 @@ export default function DashboardClient() {
       ) : !initializing && data ? (
         <div className="flex flex-col gap-5">
           <IncomeCard income={data.income} totalActual={totalActual} onSave={handleSaveIncome} />
+
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-gray-700">รายการ</span>
+            <OCRUpload categories={allCategories} onAddItems={handleAddItems} />
+          </div>
 
           <div className="grid sm:grid-cols-2 gap-5">
             {categories.map((c) => (

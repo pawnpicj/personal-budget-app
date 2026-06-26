@@ -1,5 +1,5 @@
 import { google, sheets_v4 } from "googleapis";
-import type { MonthData, BudgetItem, IncomeData, MonthSummary } from "./types";
+import type { MonthData, BudgetItem, IncomeData, MonthSummary, InstallmentPlan, InstallmentRow } from "./types";
 
 const SPREADSHEET_ID = process.env.SHEET_ID!;
 const TEMPLATE_SHEET_NAME = "_Template";
@@ -44,6 +44,34 @@ export async function listMonths(accessToken: string): Promise<string[]> {
     .filter((s) => !s.properties?.hidden && MONTH_LABEL_PATTERN.test(s.properties?.title ?? ""))
     .map((s) => s.properties?.title ?? "");
   return titles.sort().reverse();
+}
+
+export async function copyMonthSheet(
+  accessToken: string,
+  fromMonth: string,
+  toMonth: string
+): Promise<void> {
+  if (!MONTH_LABEL_PATTERN.test(fromMonth) || !MONTH_LABEL_PATTERN.test(toMonth)) {
+    throw new Error("Month label must be in MM-YYYY format");
+  }
+  const source = await getMonthData(accessToken, fromMonth);
+  await ensureMonthSheet(accessToken, toMonth);
+  await updateIncome(accessToken, toMonth, {
+    salary: source.income.salary,
+    bonus: source.income.bonus,
+    sso: source.income.sso,
+    other: source.income.other,
+  });
+  if (source.items.length > 0) {
+    const client = sheetsClient(accessToken);
+    const values = source.items.map((item) => [item.category, item.item, item.plan, 0]);
+    await client.spreadsheets.values.update({
+      spreadsheetId: SPREADSHEET_ID,
+      range: `'${toMonth}'!A${ITEM_FIRST_ROW}:D${ITEM_FIRST_ROW + values.length - 1}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values },
+    });
+  }
 }
 
 export async function hideMonthSheet(accessToken: string, month: string): Promise<void> {
@@ -404,5 +432,141 @@ export async function ensureCategoryInSettings(
     valueInputOption: "USER_ENTERED",
     insertDataOption: "INSERT_ROWS",
     requestBody: { values: [[trimmed]] },
+  });
+}
+
+// ─── Installment functions ───────────────────────────────────────────────────
+
+const INSTALLMENT_SHEET = "_Installments";
+// Columns: A=PlanName B=No C=PlannedAmt D=DueDate E=Status F=ActualAmt G=PaidDate
+
+async function ensureInstallmentSheet(client: sheets_v4.Sheets): Promise<void> {
+  const meta = await client.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const exists = (meta.data.sheets ?? []).some((s) => s.properties?.title === INSTALLMENT_SHEET);
+  if (exists) return;
+  await client.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [
+        { addSheet: { properties: { title: INSTALLMENT_SHEET, hidden: true } } },
+      ],
+    },
+  });
+  await client.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${INSTALLMENT_SHEET}'!A1:G1`,
+    valueInputOption: "RAW",
+    requestBody: { values: [["PlanName", "No", "PlannedAmt", "DueDate", "Status", "ActualAmt", "PaidDate"]] },
+  });
+}
+
+export async function listInstallmentPlans(accessToken: string): Promise<string[]> {
+  const client = sheetsClient(accessToken);
+  await ensureInstallmentSheet(client);
+  const res = await client.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${INSTALLMENT_SHEET}'!A2:A1000`,
+  });
+  const rows = res.data.values ?? [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const name = String(r[0] ?? "").trim();
+    if (name) seen.add(name);
+  }
+  return Array.from(seen);
+}
+
+export async function getInstallmentPlan(accessToken: string, planName: string): Promise<InstallmentPlan> {
+  const client = sheetsClient(accessToken);
+  await ensureInstallmentSheet(client);
+  const res = await client.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${INSTALLMENT_SHEET}'!A2:G1000`,
+  });
+  const rows = res.data.values ?? [];
+  const planRows: InstallmentRow[] = [];
+  rows.forEach((r, idx) => {
+    if (String(r[0] ?? "").trim() !== planName) return;
+    planRows.push({
+      rowIndex: idx + 2,
+      no: Number(r[1] ?? 0),
+      plannedAmount: Number(r[2] ?? 0),
+      dueDate: String(r[3] ?? ""),
+      paid: String(r[4] ?? "").toLowerCase() === "paid",
+      actualAmount: Number(r[5] ?? 0),
+      paidDate: String(r[6] ?? ""),
+    });
+  });
+  planRows.sort((a, b) => a.no - b.no);
+  return { name: planName, rows: planRows };
+}
+
+export async function createInstallmentPlan(
+  accessToken: string,
+  planName: string,
+  monthlyAmount: number,
+  count: number,
+  startMonth: string // MM/YYYY
+): Promise<void> {
+  const client = sheetsClient(accessToken);
+  await ensureInstallmentSheet(client);
+
+  const [mm, yyyy] = startMonth.split("/").map(Number);
+  const rows: string[][] = [];
+  for (let i = 0; i < count; i++) {
+    const d = new Date(yyyy, mm - 1 + i, 1);
+    const due = `${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`;
+    rows.push([planName, String(i + 1), String(monthlyAmount), due, "", "", ""]);
+  }
+
+  await client.spreadsheets.values.append({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${INSTALLMENT_SHEET}'!A2:G2`,
+    valueInputOption: "RAW",
+    insertDataOption: "INSERT_ROWS",
+    requestBody: { values: rows },
+  });
+}
+
+export async function updateInstallmentRow(
+  accessToken: string,
+  rowIndex: number,
+  paid: boolean,
+  actualAmount: number,
+  paidDate: string
+): Promise<void> {
+  const client = sheetsClient(accessToken);
+  await client.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${INSTALLMENT_SHEET}'!E${rowIndex}:G${rowIndex}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[paid ? "paid" : "", paid ? String(actualAmount) : "", paidDate]] },
+  });
+}
+
+export async function deleteInstallmentPlan(accessToken: string, planName: string): Promise<void> {
+  const client = sheetsClient(accessToken);
+  const res = await client.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: `'${INSTALLMENT_SHEET}'!A2:A1000`,
+  });
+  const rows = res.data.values ?? [];
+  const toDelete: number[] = [];
+  rows.forEach((r, idx) => {
+    if (String(r[0] ?? "").trim() === planName) toDelete.push(idx + 2);
+  });
+  if (toDelete.length === 0) return;
+
+  // Delete rows in reverse order to maintain indices
+  const sheetId = await getSheetIdByName(client, INSTALLMENT_SHEET);
+  if (sheetId === null) return;
+  const requests = toDelete.reverse().map((r) => ({
+    deleteDimension: {
+      range: { sheetId, dimension: "ROWS", startIndex: r - 1, endIndex: r },
+    },
+  }));
+  await client.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { requests },
   });
 }
