@@ -73,7 +73,6 @@ export default function IncomeCard({ income, totalActual, onSave }: Props) {
           <div className="border border-gray-200 bg-gray-50 rounded-lg px-3 py-2 text-sm text-gray-700 font-medium">
             {balance.toLocaleString("th-TH", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
-          <span className="text-xs text-gray-400">= Salary − Bonus − SSO − Other</span>
         </div>
       </div>
 
