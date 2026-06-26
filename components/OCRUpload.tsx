@@ -13,27 +13,29 @@ interface Props {
   onAddItems: (category: string, items: { item: string; plan: number; actual: number }[]) => Promise<void>;
 }
 
-async function runOCR(file: File): Promise<ExtractedItem[]> {
-  const reader = new FileReader();
-  const dataUrl = await new Promise<string>((resolve, reject) => {
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-  const [header, base64] = dataUrl.split(",");
-  const mimeType = header.match(/data:([^;]+)/)?.[1] ?? file.type;
+function parseOCRText(text: string): ExtractedItem[] {
+  const items: ExtractedItem[] = [];
+  const skipWords = ["รวม", "total", "sum", "vat", "ภาษี", "subtotal", "grand", "change", "เงินทอน"];
 
-  const res = await fetch("/api/ocr", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageBase64: base64, mimeType }),
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error ?? "OCR failed");
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line) continue;
 
-  return (json.items as { item: string; amount: number }[])
-    .filter((i) => i.item && i.amount > 0)
-    .map((i) => ({ item: i.item, amount: i.amount, selected: true }));
+    const lower = line.toLowerCase();
+    if (skipWords.some((w) => lower.includes(w))) continue;
+    if (/\s[-–]\s*$/.test(line)) continue;
+
+    const match = line.match(/^(.+?)\s+([\d,]+(?:\.\d{1,2})?)\s*$/);
+    if (!match) continue;
+
+    const itemName = match[1].trim().replace(/[\s|:.\-–]+$/, "").trim();
+    const rawNum = match[2].replace(/,/g, "").replace(/[Oo]/g, "0").replace(/[lI]/g, "1");
+    const amount = parseFloat(rawNum);
+
+    if (!itemName || isNaN(amount) || amount <= 0) continue;
+    items.push({ item: itemName, amount, selected: true });
+  }
+  return items;
 }
 
 export default function OCRUpload({ categories, onAddItems }: Props) {
@@ -68,16 +70,29 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
     setError(null);
 
     try {
-      setProgress("กำลังวิเคราะห์ภาพ...");
-      const extracted = await runOCR(file);
+      const { createWorker } = await import("tesseract.js");
 
+      setProgress("กำลังโหลดโมดูล OCR...");
+      const worker = await createWorker("tha+eng", 1, {
+        logger: (m) => {
+          if (m.status === "recognizing text") {
+            setProgress(`อ่านข้อความ ${Math.round(m.progress * 100)}%`);
+          } else if (m.status === "loading tesseract core") {
+            setProgress("โหลด Tesseract...");
+          } else if (m.status === "loading language traineddata") {
+            setProgress("โหลดภาษาไทย-อังกฤษ...");
+          }
+        },
+      });
+
+      const { data: { text } } = await worker.recognize(url);
+      await worker.terminate();
+
+      const extracted = parseOCRText(text);
+      setItems(extracted.length > 0 ? extracted : []);
       if (extracted.length === 0) {
         setError("ไม่พบรายการในภาพ — ลองถ่ายรูปใหม่ให้ชัดขึ้น หรือเพิ่มรายการเองด้านล่าง");
-        setItems([]);
-      } else {
-        setItems(extracted);
       }
-
       if (categories.length > 0) setCategory(categories[0]);
       setStep("confirm");
     } catch (e: any) {
@@ -105,19 +120,15 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
   function addManualItem() {
     setItems((prev) => [...prev, { item: "", amount: 0, selected: true }]);
   }
-
   function toggleItem(idx: number) {
     setItems((prev) => prev.map((it, i) => i === idx ? { ...it, selected: !it.selected } : it));
   }
-
   function updateAmount(idx: number, val: string) {
     setItems((prev) => prev.map((it, i) => i === idx ? { ...it, amount: parseFloat(val) || 0 } : it));
   }
-
   function updateName(idx: number, val: string) {
     setItems((prev) => prev.map((it, i) => i === idx ? { ...it, item: val } : it));
   }
-
   function removeItem(idx: number) {
     setItems((prev) => prev.filter((_, i) => i !== idx));
   }
@@ -126,10 +137,8 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
 
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 transition-colors"
-      >
+      <button onClick={() => setOpen(true)}
+        className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 transition-colors">
         <i className="ti ti-scan" aria-hidden="true" />
         สแกนบิล
       </button>
@@ -137,8 +146,6 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
       {open && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="bg-white rounded-2xl shadow-xl w-full max-w-md flex flex-col max-h-[90vh]">
-
-            {/* Header */}
             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
               <div className="flex items-center gap-2">
                 <i className="ti ti-scan text-[#1D9E75] text-lg" aria-hidden="true" />
@@ -150,8 +157,6 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
             </div>
 
             <div className="flex-1 overflow-y-auto px-5 py-4">
-
-              {/* Step: upload */}
               {(step === "upload" || step === "ocr") && (
                 <div className="flex flex-col gap-4">
                   <div
@@ -185,24 +190,18 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
                 </div>
               )}
 
-              {/* Step: confirm */}
               {step === "confirm" && (
                 <div className="flex flex-col gap-4">
                   {preview && (
                     <img src={preview} alt="bill" className="h-20 object-contain rounded-lg border border-gray-100 mx-auto" />
                   )}
-
                   <div>
                     <label className="text-xs text-gray-500 mb-1 block">บันทึกในหมวด</label>
-                    <select
-                      value={category}
-                      onChange={(e) => setCategory(e.target.value)}
-                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white"
-                    >
+                    <select value={category} onChange={(e) => setCategory(e.target.value)}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white">
                       {categories.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
-
                   <div>
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-xs text-gray-500">รายการ</span>
@@ -210,18 +209,15 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
                         <i className="ti ti-plus" /> เพิ่มเอง
                       </button>
                     </div>
-
                     {items.length === 0 && (
                       <p className="text-sm text-gray-400 text-center py-4">ไม่มีรายการ — กดเพิ่มเองได้เลย</p>
                     )}
-
                     <div className="flex flex-col gap-1.5">
                       {items.map((it, idx) => (
                         <div key={idx} className={`flex items-center gap-2 p-2 rounded-lg border transition-colors ${it.selected ? "border-[#1D9E75] bg-green-50/40" : "border-gray-200 bg-gray-50 opacity-60"}`}>
                           <input type="checkbox" checked={it.selected} onChange={() => toggleItem(idx)}
                             className="accent-[#1D9E75] w-4 h-4 shrink-0" />
-                          <input value={it.item} placeholder="ชื่อรายการ"
-                            onChange={(e) => updateName(idx, e.target.value)}
+                          <input value={it.item} placeholder="ชื่อรายการ" onChange={(e) => updateName(idx, e.target.value)}
                             className="flex-1 text-sm bg-transparent border-none outline-none text-gray-700 min-w-0" />
                           <input type="number" value={it.amount || ""} placeholder="0"
                             onChange={(e) => updateAmount(idx, e.target.value)}
@@ -235,24 +231,19 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
                       ))}
                     </div>
                   </div>
-
                   {error && <p className="text-sm text-red-500">{error}</p>}
                 </div>
               )}
             </div>
 
-            {/* Footer */}
             <div className="px-5 py-4 border-t border-gray-100 flex gap-2 shrink-0">
               {step === "confirm" ? (
                 <>
                   <button onClick={reset} className="text-sm px-4 py-2 rounded-lg border border-gray-300 hover:bg-gray-50">
                     <i className="ti ti-arrow-left" aria-hidden="true" /> ใหม่
                   </button>
-                  <button
-                    onClick={handleSave}
-                    disabled={loading || selectedCount === 0 || !category}
-                    className="flex-1 text-sm py-2 rounded-lg bg-[#1D9E75] text-white hover:bg-[#0F6E56] disabled:opacity-40 transition-colors"
-                  >
+                  <button onClick={handleSave} disabled={loading || selectedCount === 0 || !category}
+                    className="flex-1 text-sm py-2 rounded-lg bg-[#1D9E75] text-white hover:bg-[#0F6E56] disabled:opacity-40 transition-colors">
                     {loading ? "กำลังบันทึก..." : `บันทึก ${selectedCount} รายการ`}
                   </button>
                 </>
@@ -262,7 +253,6 @@ export default function OCRUpload({ categories, onAddItems }: Props) {
                 </button>
               )}
             </div>
-
           </div>
         </div>
       )}
